@@ -1,6 +1,10 @@
 import "@openzeppelin/hardhat-upgrades"
 
-import type { Contract, ContractFactory } from "ethers"
+import type {
+  Contract,
+  ContractFactory,
+  ContractTransactionResponse,
+} from "ethers"
 import type {
   Artifact,
   FactoryOptions,
@@ -11,7 +15,7 @@ import type {
   DeployProxyOptions,
   UpgradeProxyOptions,
 } from "@openzeppelin/hardhat-upgrades/src/utils/options"
-import type { TransactionReceipt } from "@ethersproject/abstract-provider"
+import { Libraries } from "hardhat-deploy/types"
 
 export interface HardhatUpgradesHelpers {
   deployProxy<T extends Contract>(
@@ -25,17 +29,21 @@ export interface HardhatUpgradesHelpers {
   ): Promise<[T, Deployment]>
 }
 
+type CustomFactoryOptions = FactoryOptions & {
+  libraries?: Libraries
+}
+
 export interface UpgradesDeployOptions {
   contractName?: string
   initializerArgs?: unknown[]
-  factoryOpts?: FactoryOptions
+  factoryOpts?: CustomFactoryOptions
   proxyOpts?: DeployProxyOptions
 }
 
 export interface UpgradesUpgradeOptions {
   contractName?: string
   initializerArgs?: unknown[]
-  factoryOpts?: FactoryOptions
+  factoryOpts?: CustomFactoryOptions
   proxyOpts?: UpgradeProxyOptions
 }
 
@@ -72,33 +80,38 @@ export async function deployProxy<T extends Contract>(
     opts?.proxyOpts
   )) as T
 
+  const deploymentTransaction = contractInstance.deploymentTransaction()
+
   // Let the transaction propagate across the ethereum nodes. This is mostly to
   // wait for all Alchemy nodes to catch up their state.
-  await contractInstance.deployTransaction.wait(1)
+  const transactionReceipt = await deploymentTransaction?.wait(1)
+
+  const contractAddress = await contractInstance.getAddress()
+  const transactionHash = deploymentTransaction?.hash
 
   log(
-    `Deployed ${name} as ${opts?.proxyOpts?.kind || "transparent"} proxy at ${
-      contractInstance.address
-    } (tx: ${contractInstance.deployTransaction.hash})`
+    `Deployed ${name} as ${
+      opts?.proxyOpts?.kind || "transparent"
+    } proxy at ${contractAddress} (tx: ${transactionHash})`
   )
 
   const artifact = artifacts.readArtifactSync(opts?.contractName || name)
 
-  const adminInstance = await upgrades.admin.getInstance()
-  const implementation = await adminInstance.getProxyImplementation(
-    contractInstance.address
+  const implementation = await upgrades.erc1967.getImplementationAddress(
+    contractAddress
   )
 
-  const transactionReceipt = await ethers.provider.getTransactionReceipt(
-    contractInstance.deployTransaction.hash
-  )
+  if (!transactionReceipt || !transactionHash) {
+    throw new Error(
+      `Could not find transaction receipt for transaction hash: ${transactionHash}`
+    )
+  }
 
   const deployment: Deployment = {
-    address: contractInstance.address,
+    address: contractAddress,
     abi: artifact.abi,
-    transactionHash: contractInstance.deployTransaction.hash,
+    transactionHash: transactionHash,
     implementation: implementation,
-    receipt: transactionReceipt,
     libraries: opts?.factoryOpts?.libraries,
     devdoc: "Contract deployed as upgradable proxy",
     args: opts?.proxyOpts?.constructorArgs,
@@ -140,39 +153,49 @@ async function upgradeProxy<T extends Contract>(
     opts?.proxyOpts
   )) as T
 
+  // This is a workaround to get the deployment transaction. The upgradeProxy attaches
+  // the deployment transaction to the field under a different name than ethers
+  // contract.deploymentTransaction() function expects.
+  // TODO: Remove this workaround once the issue is fixed on the OpenZeppelin side.
+  // Tracked in: https://github.com/keep-network/hardhat-helpers/issues/49
+  const deploymentTransaction =
+    newContractInstance.deployTransaction as unknown as ContractTransactionResponse
+
   // Let the transaction propagate across the ethereum nodes. This is mostly to
   // wait for all Alchemy nodes to catch up their state.
-  await newContractInstance.deployTransaction.wait(1)
+  const transactionReceipt = await deploymentTransaction?.wait(1)
+
+  const contractAddress = await newContractInstance.getAddress()
+  const transactionHash = deploymentTransaction?.hash
 
   log(
     `Upgraded ${proxyDeploymentName} proxy contract (address: ${proxyDeployment.address}) ` +
-      `in tx: ${newContractInstance.deployTransaction.hash}`
+      `in tx: ${transactionHash}`
   )
 
   const artifact: Artifact = artifacts.readArtifactSync(
     opts?.contractName || newContractName
   )
 
-  const adminInstance: Contract = await upgrades.admin.getInstance()
-  const implementation: string = await adminInstance.getProxyImplementation(
-    newContractInstance.address
+  const implementation = await upgrades.erc1967.getImplementationAddress(
+    contractAddress
   )
 
   log(
     `New ${proxyDeploymentName} proxy contract implementation address is: ${implementation}`
   )
 
-  const transactionReceipt: TransactionReceipt =
-    await ethers.provider.getTransactionReceipt(
-      newContractInstance.deployTransaction.hash
+  if (!transactionReceipt || !transactionHash) {
+    throw new Error(
+      `Could not find transaction receipt for transaction hash: ${transactionHash}`
     )
+  }
 
   const deployment: Deployment = {
-    address: newContractInstance.address,
+    address: contractAddress,
     abi: artifact.abi,
-    transactionHash: newContractInstance.deployTransaction.hash,
+    transactionHash: transactionHash,
     implementation: implementation,
-    receipt: transactionReceipt,
     libraries: opts?.factoryOpts?.libraries,
     devdoc: "Contract deployed as upgradable proxy",
     args: opts?.proxyOpts?.constructorArgs,
