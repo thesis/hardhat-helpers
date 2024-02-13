@@ -153,6 +153,7 @@ describe("time helpers", function () {
       })
 
       it("does not return immediately on non-hardhat networks", async function () {
+        // `waitForTransaction` returns immediately on hardhat
         this.hre.network.name = "not-hardhat"
         const waitResult = await Promise.race([
           timeHelpers.waitForTransaction(transactionResponse.hash, 5),
@@ -162,6 +163,7 @@ describe("time helpers", function () {
       })
 
       it("returns after the transaction is mined", async function () {
+        // `waitForTransaction` returns immediately on hardhat
         this.hre.network.name = "not-hardhat"
         await mine(6)
         const waitResult = await Promise.race([
